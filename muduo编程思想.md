@@ -131,6 +131,8 @@ int main(int argc, const char** argv)
 
 boost::bind的作用是使一个函数接口转换为另一个函数接口，然后使用boost::function来接收这个新的接口
 
+==C++11已经把boost整合到std中，直接包含functional头文件即可使用==
+
 ## 实例：适配成员函数
 
 ```c++
@@ -263,6 +265,8 @@ int main(int argc, char const *argv[])
     //成员函数，使用bind适配接口
     Foo foo;
     Thread t3(boost::bind(&Foo::threadFunc3, &foo));
+    //也可以传递引用
+    //Thread t3(boost::bind(&Foo::threadFunc3, boost::r));
     t3.setAutoDelete(true);
     t3.Start();
     t3.Join();
