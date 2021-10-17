@@ -84,22 +84,22 @@ int main()
 
 - 作用：
   - 封装线程类
-  - 使用`std::function`来实现基于对象编程的线程函数调用
+  - 使用`std::function`来实现**基于对象编程的线程函数调用**
 - 一些成员变量
 
-|              变量              |                          描述                           |
-| :----------------------------: | :-----------------------------------------------------: |
-|      pthread_t pthreadId_      |                       POSIX线程id                       |
-|          pid_t   tid_          |                       LWP线程tid                        |
-|        ThreadFunc func_        | typedef std::function<void ()> ThreadFunc；线程执行函数 |
-|     CountDownLatch latch_      |                                                         |
-| static AtomicInt32 numCreated_ |              静态原子类型，已启动的线程数               |
+|              变量              |                            描述                             |
+| :----------------------------: | :---------------------------------------------------------: |
+|      pthread_t pthreadId_      |                         POSIX线程id                         |
+|          pid_t   tid_          |                         LWP线程tid                          |
+|      **ThreadFunc func_**      | **typedef std::function<void ()> ThreadFunc；线程执行函数** |
+|     CountDownLatch latch_      |                主线程和子线程的任务倒计时？                 |
+| static AtomicInt32 numCreated_ |                静态原子类型，已启动的线程数                 |
 
 - 一些成员函数
 
 |     函数     |                             描述                             |
 | :----------: | :----------------------------------------------------------: |
-| void start() | 调用pthread_create(&pthreadId_, NULL, &detail::startThread, data) |
+| void start() | 调用pthread_create(&pthreadId_, NULL, **&detail::startThread**, data) |
 |  int join()  |              调用pthread_join(pthreadId_, NULL)              |
 
 
@@ -108,9 +108,23 @@ int main()
 
 源文件中除了实现`Thread.h`的成员函数，还定义了一些线程相关的东西
 
-> struct ThreadData：
+- 一些函数
+
+|                   函数                   |                      描述                       |
+| :--------------------------------------: | :---------------------------------------------: |
+|          detail::pid_t gettid()          |     通过系统调用`syscall`来获取线程真实tid      |
+|             void afterFork()             |             多线程环境下fork子进程              |
+| **void* detail::startThread(void* obj)** | **线程入口函数，调用ThreadData::runInThread()** |
+
+- 定义的类和结构体
+
+|          类\结构体          |                             描述                             |
+| :-------------------------: | :----------------------------------------------------------: |
+| class ThreadNameInitializer | 初始化当前线程名和线程tid，执行pthread_atfork(NULL, NULL, &afterFork) |
+|    **struct ThreadData**    |          **设置Thread::ThreadFunc；并执行线程函数**          |
+
+> struct ThreadData
 >
-> 核心成员函数是：void runInThread()
 
 ```c++
 struct ThreadData
@@ -120,14 +134,7 @@ struct ThreadData
     string name_;
     pid_t* tid_;
     CountDownLatch* latch_;
-    ThreadData(ThreadFunc func,
-               const string& name,
-               pid_t* tid,
-               CountDownLatch* latch)
-        : func_(std::move(func)),
-    name_(name),
-    tid_(tid),
-    latch_(latch)
+    ThreadData(ThreadFunc func, const string& name, pid_t* tid, CountDownLatch* latch): func_(std::move(func)), name_(name), tid_(tid), latch_(latch)
     { }
 	//核心是执行线程函数
     void runInThread()
@@ -139,12 +146,32 @@ struct ThreadData
 };
 ```
 
-- 一些函数
+> Thread_test.cc
 
-|                 函数                 |                      描述                       |
-| :----------------------------------: | :---------------------------------------------: |
-|        detail::pid_t gettid()        |     通过系统调用`syscall`来获取线程真实tid      |
-| void* detail::startThread(void* obj) | **线程入口函数，调用ThreadData::runInThread()** |
+```c++
+void threadFunc()
+{
+    printf("tid=%d\n", muduo::CurrentThread::tid());
+}
+
+void threadFunc2(int x)
+{
+    printf("tid=%d, x=%d\n", muduo::CurrentThread::tid(), x);
+}
+
+int main()
+{
+    muduo::Thread t1(threadFunc);	//传入void()类型函数，不需要使用bind适配接口
+    t1.start();
+    printf("t1.tid=%d\n", t1.tid());
+    t1.join();
+    
+    muduo::Thread t2(std::bind(threadFunc2, 42), "thread for free function with argument");		//传入void(int)类型函数，需要使用bind适配接口
+    t2.start();
+    printf("t2.tid=%d\n", t2.tid());
+    t2.join();
+}
+```
 
 
 
@@ -210,3 +237,36 @@ string stackTrace(bool demangle)
 }
 ```
 
+
+
+# TreadPool.h
+
+- 作用：
+  - 与【BoundedBlockQueue.h】一样，实质是一个**有界的生产者-消费者模型**
+  - 创建一个任务队列，生产者使用`run()`来生产线程任务
+  - 创建一个线程池，里面包含多个消费者线程使用`take()`来执行线程任务
+
+- 成员变量：
+
+|                       变量                       |                          描述                           |
+| :----------------------------------------------: | :-----------------------------------------------------: |
+|             mutable MutexLock mutex_             |               保护线程池任务队列的互斥锁                |
+|               Condition notEmpty_                |                        条件变量1                        |
+|                Condition notFull_                |                        条件变量2                        |
+|           **Task threadInitCallback_**           | **typedef std::function<void ()> Task**；线程执行的任务 |
+| **vector\<unique_ptr\<muduo::Thread>> threads_** |                         线程池                          |
+|             **deque\<Task> queue_**              |                        任务队列                         |
+|               size_t maxQueueSize_               |                        最大长度                         |
+|                  bool running_                   |                      线程运行flag                       |
+
+- 一些成员函数：
+
+|                    函数                    |                    描述                    |
+| :----------------------------------------: | :----------------------------------------: |
+| void setThreadInitCallback(const Task& cb) |      设置线程池中的每个线程执行的任务      |
+|       **void start(int numThreads)**       |         启动线程池：创建消费者线程         |
+|                void stop()                 |          关闭线程池：回收所有线程          |
+|            **void run(Task f)**            |  生产者：向**非满**的任务队列添加线程任务  |
+|            bool isFull() const             |               判断队列是否满               |
+|           **void runInThread()**           |       使用take()获得一个任务，并执行       |
+|              **Task take()**               | 消费者：从**非空**的任务队列中取出线程任务 |
