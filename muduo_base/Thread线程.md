@@ -178,7 +178,7 @@ int main()
 # CurrentThread.h
 
 - 作用：
-  - 当前线程的**作用域**，包含了当前线程的上下文环境
+  - 当前线程的**环境**，包含了当前线程的上下文环境
 - 一些变量
 
 |               变量                |                           描述                            |
@@ -270,3 +270,112 @@ string stackTrace(bool demangle)
 |            bool isFull() const             |               判断队列是否满               |
 |           **void runInThread()**           |       使用take()获得一个任务，并执行       |
 |              **Task take()**               | 消费者：从**非空**的任务队列中取出线程任务 |
+
+
+
+# 线程特定数据
+
+**线程共享数据：**一个进程有多个线程，线程间除了内核栈和用户栈空间的数据共享以外，其他都是共享的
+
+但有时，应用程序中有必要提供**线程私有的全局变量，仅作用在当前线程，却也可以跨多个函数访问**
+
+POSIX线程库使用**TSD（Thread-specific Data）**这个数据结构来表示线程特定数据
+
+线程特定数据也称为**线程本地存储TLS（Thread-local storage）**
+
+对于**POD类型**（C数据类型）的线程本地存储，可以用**\_\_thread关键字**
+
+
+
+**POSIX线程库使用下面一系列函数来操作TSD**
+
+```c++
+//在一个线程中创建一个key，表示该线程可拥有特定数据
+int pthread_key_create(pthread_key_t *key, void (*destr_function) (void *));
+
+//设置特定数据
+int pthread_setspecific(pthread_key_t key, const void *pointer);
+
+//获取特定数据
+void * pthread_getspecific(pthread_key_t key);
+
+//删除key
+int pthread_key_delete(pthread_key_t key);
+```
+
+
+
+# ThreadLocal.h
+
+- 作用：
+
+  - 模板类
+
+  - 实质上封装POSIX线程库提供的`pthread_key_create()`系列函数，用于**创建当前线程的特定数据**
+
+- 成员变量
+
+|        变量         | 描述 |
+| :-----------------: | :--: |
+| pthread_key_t pkey_ | key  |
+
+- 一些成员函数
+
+|              函数               |             描述              |
+| :-----------------------------: | :---------------------------: |
+|           T& value()            | 获得线程特定数据，转换为T类型 |
+| static void destructor(void *x) |         销毁特定数据          |
+
+
+
+# ThreadLocalSingleton.h
+
+- 作用：
+
+  - 模板类
+  - 线程特定数据类的单例模式
+  - 使用了两种线程特定数据存储机制
+    - （1）POD类型的线程本地存储，使用`__thread`关键字创建线程特定数据
+    - （2）POSIX线程库TSD数据结构，使用一个`Deleter `类来封装
+
+- 成员变量
+
+|              变量               |         描述          |
+| :-----------------------------: | :-------------------: |
+| static \_\_thread T* t\_value\_ | POD类型的线程特定数据 |
+|    static Deleter deleter\_     |   **包含**的删除类    |
+
+- 一些成员函数
+
+|               函数                |           描述           |
+| :-------------------------------: | :----------------------: |
+|       static T& instance()        | 返回特定数据（单例模式） |
+|        static T* pointer()        |    返回特定数据的指针    |
+| static void destructor(void* obj) |       删除特定数据       |
+
+- Deleter类：封装的POSIX线程库操作TSD的函数
+
+```c++
+class Deleter
+{
+public:
+    Deleter()
+    {
+        pthread_key_create(&pkey_, &ThreadLocalSingleton::destructor);
+    }
+
+    ~Deleter()
+    {
+        pthread_key_delete(pkey_);
+    }
+
+    void set(T* newObj)
+    {
+        assert(pthread_getspecific(pkey_) == NULL);
+        pthread_setspecific(pkey_, newObj);
+    }
+
+    pthread_key_t pkey_;
+};
+```
+
